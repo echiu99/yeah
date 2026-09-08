@@ -9,6 +9,7 @@ This project is a web application that allows users to select a Spotify playlist
 - **Tournament Rating**: Songs are displayed in pairs for users to compare and select their favorite. Odd songs get a bye into the next round until one winner remains.
 - **Full Rankings**: Final rankings use Elo ratings from every head-to-head pick, so bracket path matters less than the match results.
 - **Match History**: Review every matchup during and after the tournament, including Elo changes. Undo rewinds the last match.
+- **Song Previews**: Play Spotify’s ~30s preview for either song during a matchup. Only one preview plays at a time.
 - **Restart**: Restarting reshuffles the full original playlist.
 - **Back Button**: Allows users to return to the playlist selection page.
 

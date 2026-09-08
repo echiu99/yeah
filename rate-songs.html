@@ -10,7 +10,7 @@
     }
 
     .container {
-      max-width: 560px;
+      max-width: 720px;
       margin: 0 auto;
       padding: 20px;
     }
@@ -22,13 +22,45 @@
     .song-item {
       margin-bottom: 10px;
       text-align: center;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .song-item.is-playing {
+      border-color: #4CAF50;
+      background: #f7fff8;
+    }
+
+    .matchup-grid {
+      display: grid;
+      gap: 12px;
+    }
+
+    @media (min-width: 700px) {
+      .matchup-grid {
+        grid-template-columns: 1fr auto 1fr;
+        align-items: start;
+      }
+
+      .vs-label {
+        padding-top: 80px;
+      }
+    }
+
+    .vs-label {
+      text-align: center;
+      font-weight: bold;
+      color: #777;
+      align-self: center;
     }
 
     .button {
       display: block;
       width: 100%;
       padding: 10px;
-      margin-top: 20px;
+      margin-top: 12px;
       text-align: center;
       background-color: #4CAF50;
       color: #fff;
@@ -47,6 +79,20 @@
     .button:disabled {
       opacity: 0.6;
       cursor: not-allowed;
+    }
+
+    .button-preview {
+      background: #191414;
+      margin-top: 8px;
+    }
+
+    .button-preview:hover:not(:disabled) {
+      background: #333;
+    }
+
+    .button-preview.is-active {
+      background: #1Db954;
+      color: #000;
     }
 
     .back-button {
@@ -122,6 +168,11 @@
       font-size: 0.9em;
     }
 
+    .embed-host {
+      margin-top: 8px;
+      min-height: 80px;
+    }
+
     .panel {
       margin-top: 20px;
       padding: 12px;
@@ -148,6 +199,10 @@
     .elo-down {
       color: #c62828;
     }
+
+    [hidden] {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -157,6 +212,33 @@
     <h1>Tournament Rating</h1>
     <div id="round-label" class="round-label"></div>
     <div id="song-container" class="status">Loading songs…</div>
+
+    <div id="matchup-panel" hidden>
+      <p class="hint">
+        Play a ~30s Spotify preview for each song. Only one side plays at a time.
+        Spotify doesn’t expose a “most played moment,” so this is their standard preview clip.
+      </p>
+      <div class="matchup-grid">
+        <div class="song-item" id="song-slot-0">
+          <h3 id="song-name-0"></h3>
+          <p id="song-artist-0"></p>
+          <p class="meta" id="song-meta-0"></p>
+          <div class="embed-host"><div id="embed-0"></div></div>
+          <button type="button" class="button button-preview" id="preview-btn-0">Play preview</button>
+          <button type="button" class="button" id="select-btn-0">Select</button>
+        </div>
+        <div class="vs-label">vs</div>
+        <div class="song-item" id="song-slot-1">
+          <h3 id="song-name-1"></h3>
+          <p id="song-artist-1"></p>
+          <p class="meta" id="song-meta-1"></p>
+          <div class="embed-host"><div id="embed-1"></div></div>
+          <button type="button" class="button button-preview" id="preview-btn-1">Play preview</button>
+          <button type="button" class="button" id="select-btn-1">Select</button>
+        </div>
+      </div>
+    </div>
+
     <button class="button undo-button" type="button" id="undo-button" onclick="undoSelection()" disabled>Undo last match</button>
     <div id="side-panels"></div>
   </div>
@@ -176,13 +258,26 @@
     let roundNumber = 1;
     let finished = false;
 
+    let spotifyIframeApi = null;
+    let embedControllers = [null, null];
+    let embedsInitialized = false;
+    let previewPlaying = [false, false];
+    let htmlAudio = null;
+    let htmlAudioIndex = null;
+
     const songContainer = document.getElementById('song-container');
+    const matchupPanel = document.getElementById('matchup-panel');
     const undoButton = document.getElementById('undo-button');
     const roundLabel = document.getElementById('round-label');
     const userBar = document.getElementById('user-bar');
     const sidePanels = document.getElementById('side-panels');
 
     ensureUserBarStyles();
+
+    document.getElementById('select-btn-0').addEventListener('click', () => selectWinner(0));
+    document.getElementById('select-btn-1').addEventListener('click', () => selectWinner(1));
+    document.getElementById('preview-btn-0').addEventListener('click', () => togglePreview(0));
+    document.getElementById('preview-btn-1').addEventListener('click', () => togglePreview(1));
 
     function shuffle(songs) {
       const copy = [...songs];
@@ -198,6 +293,7 @@
         name: track.name,
         artist: track.artists.map((artist) => artist.name).join(', '),
         id: track.id,
+        previewUrl: track.preview_url || null,
         wins: 0,
         losses: 0,
         elo: ELO_START,
@@ -257,6 +353,221 @@
         : '';
     }
 
+    function ensureHtmlAudio() {
+      if (htmlAudio) {
+        return htmlAudio;
+      }
+
+      htmlAudio = new Audio();
+      htmlAudio.preload = 'none';
+      htmlAudio.addEventListener('ended', () => {
+        if (htmlAudioIndex !== null) {
+          previewPlaying[htmlAudioIndex] = false;
+          updatePreviewButtons();
+          htmlAudioIndex = null;
+        }
+      });
+      htmlAudio.addEventListener('pause', () => {
+        if (htmlAudioIndex !== null && htmlAudio.paused) {
+          previewPlaying[htmlAudioIndex] = false;
+          updatePreviewButtons();
+        }
+      });
+      return htmlAudio;
+    }
+
+    function loadSpotifyIframeApi() {
+      if (spotifyIframeApi) {
+        return Promise.resolve(spotifyIframeApi);
+      }
+
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Timed out loading Spotify preview player'));
+        }, 15000);
+
+        const previous = window.onSpotifyIframeApiReady;
+        window.onSpotifyIframeApiReady = (api) => {
+          clearTimeout(timeout);
+          spotifyIframeApi = api;
+          if (typeof previous === 'function') {
+            previous(api);
+          }
+          resolve(api);
+        };
+
+        if (!document.getElementById('spotify-iframe-api')) {
+          const script = document.createElement('script');
+          script.id = 'spotify-iframe-api';
+          script.src = 'https://open.spotify.com/embed/iframe-api/v1';
+          script.async = true;
+          script.onerror = () => {
+            clearTimeout(timeout);
+            reject(new Error('Could not load Spotify preview player'));
+          };
+          document.body.appendChild(script);
+        }
+      });
+    }
+
+    function loadTrackIntoController(controller, trackId) {
+      const uri = `spotify:track:${trackId}`;
+      if (typeof controller.loadUri === 'function') {
+        return controller.loadUri(uri);
+      }
+      if (typeof controller.loadEntity === 'function') {
+        return controller.loadEntity(uri);
+      }
+      return null;
+    }
+
+    async function ensureEmbedControllers() {
+      if (embedsInitialized) {
+        return embedControllers;
+      }
+
+      const api = await loadSpotifyIframeApi();
+
+      await Promise.all([0, 1].map((index) => new Promise((resolve) => {
+        const element = document.getElementById(`embed-${index}`);
+        api.createController(element, {
+          width: '100%',
+          height: '80',
+          uri: 'spotify:track:11dFghVXANMlKmJXsNCbNl',
+        }, (controller) => {
+          embedControllers[index] = controller;
+          controller.addListener('playback_update', (event) => {
+            const isPaused = Boolean(event?.data?.isPaused);
+            previewPlaying[index] = !isPaused;
+            if (!isPaused) {
+              pausePreviewSide(1 - index);
+            }
+            updatePreviewButtons();
+          });
+          resolve();
+        });
+      })));
+
+      embedsInitialized = true;
+      return embedControllers;
+    }
+
+    function pauseHtmlAudio() {
+      if (htmlAudio && !htmlAudio.paused) {
+        htmlAudio.pause();
+      }
+      if (htmlAudioIndex !== null) {
+        previewPlaying[htmlAudioIndex] = false;
+        htmlAudioIndex = null;
+      }
+    }
+
+    function pausePreviewSide(index) {
+      const controller = embedControllers[index];
+      if (controller) {
+        try {
+          controller.pause();
+        } catch (error) {
+          console.warn('Could not pause preview', error);
+        }
+      }
+      if (htmlAudioIndex === index) {
+        pauseHtmlAudio();
+      }
+      previewPlaying[index] = false;
+    }
+
+    function stopAllPreviews() {
+      pausePreviewSide(0);
+      pausePreviewSide(1);
+      pauseHtmlAudio();
+      previewPlaying = [false, false];
+      updatePreviewButtons();
+    }
+
+    function updatePreviewButtons() {
+      [0, 1].forEach((index) => {
+        const button = document.getElementById(`preview-btn-${index}`);
+        const slot = document.getElementById(`song-slot-${index}`);
+        if (!button || !slot) {
+          return;
+        }
+
+        const playing = previewPlaying[index];
+        button.textContent = playing ? 'Pause preview' : 'Play preview';
+        button.classList.toggle('is-active', playing);
+        slot.classList.toggle('is-playing', playing);
+      });
+    }
+
+    async function syncEmbedsToCurrentPair() {
+      if (currentPair.length !== 2) {
+        return;
+      }
+
+      try {
+        await ensureEmbedControllers();
+        currentPair.forEach((song, index) => {
+          const controller = embedControllers[index];
+          if (controller) {
+            loadTrackIntoController(controller, song.id);
+          }
+        });
+      } catch (error) {
+        console.warn(error);
+      }
+    }
+
+    async function togglePreview(index) {
+      const song = currentPair[index];
+      if (!song) {
+        return;
+      }
+
+      if (previewPlaying[index]) {
+        pausePreviewSide(index);
+        updatePreviewButtons();
+        return;
+      }
+
+      pausePreviewSide(1 - index);
+
+      if (song.previewUrl) {
+        const audio = ensureHtmlAudio();
+        htmlAudioIndex = index;
+        audio.src = song.previewUrl;
+        try {
+          await audio.play();
+          previewPlaying[index] = true;
+          updatePreviewButtons();
+          return;
+        } catch (error) {
+          console.warn('HTML preview failed, falling back to Spotify embed', error);
+        }
+      }
+
+      try {
+        await ensureEmbedControllers();
+        const controller = embedControllers[index];
+        if (!controller) {
+          return;
+        }
+        loadTrackIntoController(controller, song.id);
+        if (typeof controller.play === 'function') {
+          controller.play();
+        } else if (typeof controller.togglePlay === 'function') {
+          controller.togglePlay();
+        } else if (typeof controller.resume === 'function') {
+          controller.resume();
+        }
+        previewPlaying[index] = true;
+        updatePreviewButtons();
+      } catch (error) {
+        console.error(error);
+        alert('Could not start the Spotify preview. Try again or use the embed controls.');
+      }
+    }
+
     function renderSidePanels(options = {}) {
       const { showRankings = true, openHistory = matchLog.length > 0, openRankings = false } = options;
       const rankings = getRankings();
@@ -303,26 +614,34 @@
       `;
     }
 
+    function showStatus(messageHtml) {
+      stopAllPreviews();
+      matchupPanel.hidden = true;
+      songContainer.hidden = false;
+      songContainer.innerHTML = messageHtml;
+    }
+
     function renderMatchup() {
       finished = false;
+      stopAllPreviews();
       updateRoundLabel();
-      songContainer.innerHTML = `
-        <div class="song-item">
-          <h3>${escapeHtml(currentPair[0].name)}</h3>
-          <p>${escapeHtml(currentPair[0].artist)}</p>
-          <p class="meta">Elo ${currentPair[0].elo} · ${currentPair[0].wins}-${currentPair[0].losses}</p>
-          <button class="button" type="button" onclick="selectWinner(0)">Select</button>
-        </div>
-        <div class="song-item">
-          <h3>${escapeHtml(currentPair[1].name)}</h3>
-          <p>${escapeHtml(currentPair[1].artist)}</p>
-          <p class="meta">Elo ${currentPair[1].elo} · ${currentPair[1].wins}-${currentPair[1].losses}</p>
-          <button class="button" type="button" onclick="selectWinner(1)">Select</button>
-        </div>
-      `;
+
+      songContainer.hidden = true;
+      songContainer.innerHTML = '';
+      matchupPanel.hidden = false;
+
+      currentPair.forEach((song, index) => {
+        document.getElementById(`song-name-${index}`).textContent = song.name;
+        document.getElementById(`song-artist-${index}`).textContent = song.artist;
+        document.getElementById(`song-meta-${index}`).textContent =
+          `Elo ${song.elo} · ${song.wins}-${song.losses}`;
+      });
+
       undoButton.disabled = history.length === 0;
       undoButton.hidden = false;
+      updatePreviewButtons();
       renderSidePanels({ openHistory: true, openRankings: false });
+      syncEmbedsToCurrentPair();
     }
 
     function nextMatch() {
@@ -338,7 +657,7 @@
           }
 
           if (advancing.length === 0) {
-            songContainer.innerHTML = '<p class="error">No songs available for this tournament.</p>';
+            showStatus('<p class="error">No songs available for this tournament.</p>');
             undoButton.disabled = true;
             sidePanels.innerHTML = '';
             return;
@@ -355,6 +674,8 @@
     }
 
     function selectWinner(index) {
+      stopAllPreviews();
+
       const winner = currentPair[index];
       const loser = currentPair[1 - index];
       const winnerWinsBefore = winner.wins;
@@ -407,6 +728,8 @@
         return;
       }
 
+      stopAllPreviews();
+
       previous.winner.wins = previous.winnerWinsBefore;
       previous.winner.losses = previous.winnerLossesBefore;
       previous.loser.wins = previous.loserWinsBefore;
@@ -426,6 +749,9 @@
 
     function displayWinner(champion) {
       finished = true;
+      stopAllPreviews();
+      matchupPanel.hidden = true;
+      songContainer.hidden = false;
       roundLabel.textContent = 'Tournament complete';
       undoButton.disabled = history.length === 0;
       undoButton.hidden = false;
@@ -462,6 +788,7 @@
     }
 
     function restartTournament() {
+      stopAllPreviews();
       remaining = shuffle(cloneSongs(originalSongs));
       advancing = [];
       currentPair = [];
@@ -474,6 +801,7 @@
     }
 
     function goBack() {
+      stopAllPreviews();
       localStorage.removeItem(STORAGE_KEYS.selectedPlaylistId);
       window.location.href = 'choose-playlist.html';
     }
@@ -483,22 +811,22 @@
       const selectedPlaylistId = localStorage.getItem(STORAGE_KEYS.selectedPlaylistId);
 
       if (!accessToken) {
-        songContainer.innerHTML = '<p class="error">You are not authorized. <a href="index.html">Log in with Spotify</a>.</p>';
+        showStatus('<p class="error">You are not authorized. <a href="index.html">Log in with Spotify</a>.</p>');
         return;
       }
 
       try {
         await renderUserBar(userBar);
       } catch (error) {
-        songContainer.innerHTML = `
+        showStatus(`
           <p class="error">${escapeHtml(error.message || 'Could not verify your Spotify profile.')}</p>
           <p class="error">Use Log out or Switch account above, then try again.</p>
-        `;
+        `);
         return;
       }
 
       if (!selectedPlaylistId) {
-        songContainer.innerHTML = '<p class="error">No playlist selected. <a href="choose-playlist.html">Choose a playlist</a>.</p>';
+        showStatus('<p class="error">No playlist selected. <a href="choose-playlist.html">Choose a playlist</a>.</p>');
         return;
       }
 
@@ -521,6 +849,9 @@
 
         originalSongs = cloneSongs(uniqueSongs);
 
+        // Warm the embed API in the background so the first Play click feels faster.
+        loadSpotifyIframeApi().catch((error) => console.warn(error));
+
         if (uniqueSongs.length === 1) {
           displayWinner(uniqueSongs[0]);
           return;
@@ -532,16 +863,14 @@
         console.error('Error fetching songs:', error);
         if (error.message === 'Not authorized') {
           clearAuth();
-          songContainer.innerHTML = `
-            <p class="error">Your Spotify session expired. <a href="index.html">Log in again</a>.</p>
-          `;
+          showStatus('<p class="error">Your Spotify session expired. <a href="index.html">Log in again</a>.</p>');
           return;
         }
 
-        songContainer.innerHTML = `
+        showStatus(`
           <p class="error">Error fetching songs. Please check your connection or reauthorize the app.</p>
           <button class="button" type="button" onclick="window.location.reload()">Retry</button>
-        `;
+        `);
       }
     };
   </script>
