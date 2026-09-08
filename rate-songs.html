@@ -200,6 +200,21 @@
       color: #c62828;
     }
 
+    .preview-note {
+      margin: 0 0 12px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      border: 1px solid #ddd;
+      background: #f7f7f7;
+      text-align: left;
+      font-size: 0.95em;
+    }
+
+    .preview-note.warning {
+      border-color: #f0c36d;
+      background: #fff8e8;
+    }
+
     [hidden] {
       display: none !important;
     }
@@ -211,19 +226,19 @@
     <div id="user-bar"></div>
     <h1>Tournament Rating</h1>
     <div id="round-label" class="round-label"></div>
+    <div id="preview-mode-note" class="preview-note" hidden></div>
     <div id="song-container" class="status">Loading songs…</div>
 
     <div id="matchup-panel" hidden>
-      <p class="hint">
-        Play a ~30s Spotify preview for each song. Only one side plays at a time.
-        Spotify doesn’t expose a “most played moment,” so this is their standard preview clip.
+      <p class="hint" id="preview-hint">
+        Play a short preview for each song. Only one side plays at a time.
       </p>
       <div class="matchup-grid">
         <div class="song-item" id="song-slot-0">
           <h3 id="song-name-0"></h3>
           <p id="song-artist-0"></p>
           <p class="meta" id="song-meta-0"></p>
-          <div class="embed-host"><div id="embed-0"></div></div>
+          <div class="embed-host" data-embed-host="0"><div id="embed-0"></div></div>
           <button type="button" class="button button-preview" id="preview-btn-0">Play preview</button>
           <button type="button" class="button" id="select-btn-0">Select</button>
         </div>
@@ -232,7 +247,7 @@
           <h3 id="song-name-1"></h3>
           <p id="song-artist-1"></p>
           <p class="meta" id="song-meta-1"></p>
-          <div class="embed-host"><div id="embed-1"></div></div>
+          <div class="embed-host" data-embed-host="1"><div id="embed-1"></div></div>
           <button type="button" class="button button-preview" id="preview-btn-1">Play preview</button>
           <button type="button" class="button" id="select-btn-1">Select</button>
         </div>
@@ -244,6 +259,7 @@
   </div>
 
   <script src="spotify-auth.js"></script>
+  <script src="spotify-player.js"></script>
   <script>
     const ELO_START = 1000;
     const ELO_K = 32;
@@ -257,6 +273,8 @@
     let eliminated = [];
     let roundNumber = 1;
     let finished = false;
+    let spotifyProfile = null;
+    let previewMode = 'embed'; // 'account' | 'embed'
 
     let spotifyIframeApi = null;
     let embedControllers = [null, null];
@@ -271,6 +289,8 @@
     const roundLabel = document.getElementById('round-label');
     const userBar = document.getElementById('user-bar');
     const sidePanels = document.getElementById('side-panels');
+    const previewModeNote = document.getElementById('preview-mode-note');
+    const previewHint = document.getElementById('preview-hint');
 
     ensureUserBarStyles();
 
@@ -481,6 +501,7 @@
       pausePreviewSide(0);
       pausePreviewSide(1);
       pauseHtmlAudio();
+      pauseAccountPlayback();
       previewPlaying = [false, false];
       updatePreviewButtons();
     }
@@ -500,8 +521,71 @@
       });
     }
 
+    function applyPreviewModeUi() {
+      const usingAccount = previewMode === 'account';
+      document.querySelectorAll('[data-embed-host]').forEach((host) => {
+        host.hidden = usingAccount;
+      });
+
+      if (usingAccount) {
+        previewHint.textContent =
+          'Premium playback: previews play from your Spotify account for ~30 seconds. Only one side plays at a time.';
+        previewModeNote.hidden = false;
+        previewModeNote.classList.remove('warning');
+        previewModeNote.textContent =
+          'Using Spotify Premium account playback (no signup prompt after the clip).';
+      } else if (spotifyProfile && isPremiumProfile(spotifyProfile) && !hasAccountPlaybackScopes()) {
+        previewHint.textContent =
+          'Play a ~30s Spotify embed preview for each song. Only one side plays at a time.';
+        previewModeNote.hidden = false;
+        previewModeNote.classList.add('warning');
+        previewModeNote.innerHTML =
+          'Your account is Premium, but this login is missing playback permission. ' +
+          '<button type="button" class="button button-secondary" id="reauth-playback-button" style="width:auto;display:inline-block;margin:8px 0 0;">Re-authorize for account playback</button>';
+        document.getElementById('reauth-playback-button')?.addEventListener('click', () => {
+          logout({ switchAccount: true });
+        });
+      } else {
+        previewHint.textContent =
+          'Free plan: play Spotify’s ~30s embed preview. Only one side plays at a time. A signup link after the clip is normal for embeds.';
+        previewModeNote.hidden = false;
+        previewModeNote.classList.remove('warning');
+        previewModeNote.textContent =
+          'Using embed previews (works on Free). If you have Premium, re-authorize once to unlock account playback without the signup prompt.';
+      }
+    }
+
+    async function configurePreviewMode(profile) {
+      spotifyProfile = profile;
+      previewMode = 'embed';
+
+      if (!isPremiumProfile(profile)) {
+        applyPreviewModeUi();
+        return;
+      }
+
+      if (!hasAccountPlaybackScopes()) {
+        applyPreviewModeUi();
+        return;
+      }
+
+      try {
+        await ensureWebPlayer();
+        previewMode = 'account';
+      } catch (error) {
+        console.warn('Falling back to embed previews:', error);
+        previewMode = 'embed';
+        previewModeNote.hidden = false;
+        previewModeNote.classList.add('warning');
+        previewModeNote.textContent =
+          `Could not start account playback (${error.message}). Using embed previews instead.`;
+      }
+
+      applyPreviewModeUi();
+    }
+
     async function syncEmbedsToCurrentPair() {
-      if (currentPair.length !== 2) {
+      if (previewMode === 'account' || currentPair.length !== 2) {
         return;
       }
 
@@ -525,12 +609,45 @@
       }
 
       if (previewPlaying[index]) {
-        pausePreviewSide(index);
+        if (previewMode === 'account') {
+          await pauseAccountPlayback();
+        } else {
+          pausePreviewSide(index);
+          pauseHtmlAudio();
+        }
+        previewPlaying[index] = false;
         updatePreviewButtons();
         return;
       }
 
       pausePreviewSide(1 - index);
+      pauseHtmlAudio();
+      if (previewMode === 'account') {
+        await pauseAccountPlayback();
+      }
+
+      if (previewMode === 'account') {
+        try {
+          await playAccountTrackPreview(song.id, {
+            onStopped: () => {
+              previewPlaying = [false, false];
+              updatePreviewButtons();
+            },
+          });
+          previewPlaying = [false, false];
+          previewPlaying[index] = true;
+          updatePreviewButtons();
+          return;
+        } catch (error) {
+          console.warn('Account preview failed, falling back to embed', error);
+          previewMode = 'embed';
+          applyPreviewModeUi();
+          previewModeNote.hidden = false;
+          previewModeNote.classList.add('warning');
+          previewModeNote.textContent =
+            `Account playback failed (${error.message}). Switched to embed previews.`;
+        }
+      }
 
       if (song.previewUrl) {
         const audio = ensureHtmlAudio();
@@ -816,7 +933,8 @@
       }
 
       try {
-        await renderUserBar(userBar);
+        spotifyProfile = await renderUserBar(userBar);
+        await configurePreviewMode(spotifyProfile);
       } catch (error) {
         showStatus(`
           <p class="error">${escapeHtml(error.message || 'Could not verify your Spotify profile.')}</p>
@@ -849,8 +967,12 @@
 
         originalSongs = cloneSongs(uniqueSongs);
 
-        // Warm the embed API in the background so the first Play click feels faster.
-        loadSpotifyIframeApi().catch((error) => console.warn(error));
+        // Warm preview backends in the background.
+        if (previewMode === 'account') {
+          ensureWebPlayer().catch((error) => console.warn(error));
+        } else {
+          loadSpotifyIframeApi().catch((error) => console.warn(error));
+        }
 
         if (uniqueSongs.length === 1) {
           displayWinner(uniqueSongs[0]);

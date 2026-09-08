@@ -1,6 +1,14 @@
 const SPOTIFY_CLIENT_ID = '9817b40c3aff418c9d0995bfe77885a1';
 const SPOTIFY_REDIRECT_URI = 'https://echiu99.github.io/yeah/redirect.html';
-const SPOTIFY_SCOPES = 'playlist-read-private playlist-read-collaborative user-read-private';
+const SPOTIFY_SCOPES = [
+  'playlist-read-private',
+  'playlist-read-collaborative',
+  'user-read-private',
+  'user-read-email',
+  'streaming',
+  'user-modify-playback-state',
+  'user-read-playback-state',
+].join(' ');
 
 const STORAGE_KEYS = {
   accessToken: 'spotifyAccessToken',
@@ -9,6 +17,7 @@ const STORAGE_KEYS = {
   codeVerifier: 'spotifyCodeVerifier',
   selectedPlaylistId: 'selectedPlaylistId',
   userProfile: 'spotifyUserProfile',
+  tokenScopes: 'spotifyTokenScopes',
 };
 
 function generateRandomString(length) {
@@ -41,8 +50,21 @@ function storeTokenResponse(data) {
     localStorage.setItem(STORAGE_KEYS.refreshToken, data.refresh_token);
   }
 
+  if (data.scope) {
+    localStorage.setItem(STORAGE_KEYS.tokenScopes, data.scope);
+  }
+
   const expiresInMs = (data.expires_in || 3600) * 1000;
   localStorage.setItem(STORAGE_KEYS.expiresAt, String(Date.now() + expiresInMs - 60000));
+}
+
+function hasScope(scope) {
+  const scopes = (localStorage.getItem(STORAGE_KEYS.tokenScopes) || '').split(/\s+/).filter(Boolean);
+  return scopes.includes(scope);
+}
+
+function hasAccountPlaybackScopes() {
+  return hasScope('streaming') && hasScope('user-modify-playback-state');
 }
 
 function clearAuth() {
@@ -52,6 +74,7 @@ function clearAuth() {
   localStorage.removeItem(STORAGE_KEYS.codeVerifier);
   localStorage.removeItem(STORAGE_KEYS.userProfile);
   localStorage.removeItem(STORAGE_KEYS.selectedPlaylistId);
+  localStorage.removeItem(STORAGE_KEYS.tokenScopes);
 }
 
 function logout(options = {}) {
@@ -240,8 +263,13 @@ async function fetchCurrentUser() {
     displayName: profile.display_name,
     email: profile.email || null,
     imageUrl: profile.images?.[0]?.url || null,
+    product: profile.product || null,
   }));
   return profile;
+}
+
+function isPremiumProfile(profile) {
+  return String(profile?.product || '').toLowerCase() === 'premium';
 }
 
 function getCachedUserProfile() {
@@ -264,6 +292,7 @@ async function renderUserBar(container) {
     const name = profile.display_name || profile.id || 'Spotify user';
     const imageUrl = profile.images?.[0]?.url;
     const email = profile.email ? `<span class="user-email">${escapeHtml(profile.email)}</span>` : '';
+    const plan = isPremiumProfile(profile) ? 'Premium' : 'Free';
     const avatar = imageUrl
       ? `<img class="user-avatar" src="${escapeHtml(imageUrl)}" alt="" width="36" height="36">`
       : '<div class="user-avatar user-avatar-fallback" aria-hidden="true"></div>';
@@ -275,7 +304,7 @@ async function renderUserBar(container) {
           <div class="user-text">
             <strong>${escapeHtml(name)}</strong>
             ${email}
-            <span class="user-id">@${escapeHtml(profile.id)}</span>
+            <span class="user-id">@${escapeHtml(profile.id)} · ${plan}</span>
           </div>
         </div>
         <div class="user-actions">
