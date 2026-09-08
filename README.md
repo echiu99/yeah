@@ -7,8 +7,8 @@ This project is a web application that allows users to select a Spotify playlist
 - **Spotify Authorization**: Log in with your Spotify account using Authorization Code + PKCE.
 - **Playlist Selection**: Choose any playlist from your Spotify account to use in the tournament.
 - **Tournament Rating**: Songs are displayed in pairs for users to compare and select their favorite. Odd songs get a bye into the next round until one winner remains.
-- **Full Rankings**: Final rankings include every song, ordered by how far each song advanced.
-- **Undo Option**: Users can undo their last selection if they change their mind.
+- **Full Rankings**: Final rankings use Elo ratings from every head-to-head pick, so bracket path matters less than the match results.
+- **Match History**: Review every matchup during and after the tournament, including Elo changes. Undo rewinds the last match.
 - **Restart**: Restarting reshuffles the full original playlist.
 - **Back Button**: Allows users to return to the playlist selection page.
 
