@@ -95,6 +95,33 @@
       color: #000;
     }
 
+    .preview-controls {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .preview-controls .button {
+      margin-top: 0;
+    }
+
+    .preview-controls .button-preview {
+      flex: 1;
+    }
+
+    .button-skip {
+      width: auto;
+      min-width: 64px;
+      padding: 10px 12px;
+      background: #fff;
+      color: #333;
+      border: 1px solid #bbb;
+    }
+
+    .button-skip:hover:not(:disabled) {
+      background: #f0f0f0;
+    }
+
     .back-button {
       position: absolute;
       top: 10px;
@@ -239,7 +266,10 @@
           <p id="song-artist-0"></p>
           <p class="meta" id="song-meta-0"></p>
           <div class="embed-host" data-embed-host="0"><div id="embed-0"></div></div>
-          <button type="button" class="button button-preview" id="preview-btn-0">Play preview</button>
+          <div class="preview-controls">
+            <button type="button" class="button button-preview" id="preview-btn-0">Play preview</button>
+            <button type="button" class="button button-skip" id="skip-btn-0" hidden>+5s</button>
+          </div>
           <button type="button" class="button" id="select-btn-0">Select</button>
         </div>
         <div class="vs-label">vs</div>
@@ -248,7 +278,10 @@
           <p id="song-artist-1"></p>
           <p class="meta" id="song-meta-1"></p>
           <div class="embed-host" data-embed-host="1"><div id="embed-1"></div></div>
-          <button type="button" class="button button-preview" id="preview-btn-1">Play preview</button>
+          <div class="preview-controls">
+            <button type="button" class="button button-preview" id="preview-btn-1">Play preview</button>
+            <button type="button" class="button button-skip" id="skip-btn-1" hidden>+5s</button>
+          </div>
           <button type="button" class="button" id="select-btn-1">Select</button>
         </div>
       </div>
@@ -298,6 +331,10 @@
     document.getElementById('select-btn-1').addEventListener('click', () => selectWinner(1));
     document.getElementById('preview-btn-0').addEventListener('click', () => togglePreview(0));
     document.getElementById('preview-btn-1').addEventListener('click', () => togglePreview(1));
+    document.getElementById('skip-btn-0').addEventListener('click', () => skipPreview(0));
+    document.getElementById('skip-btn-1').addEventListener('click', () => skipPreview(1));
+
+    let embedPositionsSec = [0, 0];
 
     function shuffle(songs) {
       const copy = [...songs];
@@ -314,6 +351,7 @@
         artist: track.artists.map((artist) => artist.name).join(', '),
         id: track.id,
         previewUrl: track.preview_url || null,
+        durationMs: track.duration_ms || 0,
         wins: 0,
         losses: 0,
         elo: ELO_START,
@@ -458,6 +496,11 @@
           embedControllers[index] = controller;
           controller.addListener('playback_update', (event) => {
             const isPaused = Boolean(event?.data?.isPaused);
+            const position = Number(event?.data?.position);
+            if (Number.isFinite(position)) {
+              // Embed API reports position in milliseconds.
+              embedPositionsSec[index] = position / 1000;
+            }
             previewPlaying[index] = !isPaused;
             if (!isPaused) {
               pausePreviewSide(1 - index);
@@ -509,6 +552,7 @@
     function updatePreviewButtons() {
       [0, 1].forEach((index) => {
         const button = document.getElementById(`preview-btn-${index}`);
+        const skipButton = document.getElementById(`skip-btn-${index}`);
         const slot = document.getElementById(`song-slot-${index}`);
         if (!button || !slot) {
           return;
@@ -518,7 +562,33 @@
         button.textContent = playing ? 'Pause preview' : 'Play preview';
         button.classList.toggle('is-active', playing);
         slot.classList.toggle('is-playing', playing);
+        if (skipButton) {
+          skipButton.hidden = !playing;
+        }
       });
+    }
+
+    async function skipPreview(index) {
+      if (!previewPlaying[index]) {
+        return;
+      }
+
+      if (previewMode === 'account') {
+        await skipAccountPlayback(5);
+        return;
+      }
+
+      if (htmlAudioIndex === index && htmlAudio) {
+        htmlAudio.currentTime += 5;
+        return;
+      }
+
+      const controller = embedControllers[index];
+      if (controller && typeof controller.seek === 'function') {
+        const nextSec = (embedPositionsSec[index] || 0) + 5;
+        embedPositionsSec[index] = nextSec;
+        controller.seek(nextSec);
+      }
     }
 
     function applyPreviewModeUi() {
@@ -529,7 +599,7 @@
 
       if (usingAccount) {
         previewHint.textContent =
-          'Premium playback: previews play from your Spotify account for ~30 seconds. Only one side plays at a time.';
+          'Premium playback: starts past the intro (~15s / 20% in) for ~30 seconds. Use +5s while playing if needed.';
         previewModeNote.hidden = false;
         previewModeNote.classList.remove('warning');
         previewModeNote.textContent =
@@ -629,6 +699,7 @@
       if (previewMode === 'account') {
         try {
           await playAccountTrackPreview(song.id, {
+            positionMs: getPreviewStartMs(song),
             onStopped: () => {
               previewPlaying = [false, false];
               updatePreviewButtons();
@@ -649,11 +720,15 @@
         }
       }
 
+      const startSec = getPreviewStartMs(song) / 1000;
+
       if (song.previewUrl) {
         const audio = ensureHtmlAudio();
         htmlAudioIndex = index;
         audio.src = song.previewUrl;
         try {
+          const maxStart = Math.max(0, (Number(song.durationMs) / 1000) - 5);
+          audio.currentTime = Math.min(startSec, maxStart);
           await audio.play();
           previewPlaying[index] = true;
           updatePreviewButtons();
@@ -676,6 +751,16 @@
           controller.togglePlay();
         } else if (typeof controller.resume === 'function') {
           controller.resume();
+        }
+        if (typeof controller.seek === 'function' && startSec > 0) {
+          setTimeout(() => {
+            try {
+              controller.seek(startSec);
+              embedPositionsSec[index] = startSec;
+            } catch (error) {
+              console.warn('Could not seek embed preview', error);
+            }
+          }, 400);
         }
         previewPlaying[index] = true;
         updatePreviewButtons();

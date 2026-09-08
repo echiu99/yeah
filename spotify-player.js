@@ -5,6 +5,9 @@ let webDeviceId = null;
 let webPlayerReadyPromise = null;
 let accountStopTimer = null;
 let accountPlayingTrackId = null;
+let accountPreviewStartedAt = 0;
+let accountPreviewStartPositionMs = 0;
+let accountPreviewOnStopped = null;
 
 function loadWebPlaybackSdk() {
   if (window.Spotify?.Player) {
@@ -29,6 +32,22 @@ function loadWebPlaybackSdk() {
       document.body.appendChild(script);
     }
   });
+}
+
+function getPreviewStartMs(song) {
+  const duration = Number(song?.durationMs) || 0;
+  if (duration <= 0) {
+    return 15000;
+  }
+
+  // Short tracks: nudge a little past the very start.
+  if (duration < 40000) {
+    return Math.floor(duration * 0.1);
+  }
+
+  // Prefer past the intro: at least 15s, or ~20% in, but leave room for a 30s listen.
+  const preferred = Math.max(15000, Math.floor(duration * 0.2));
+  return Math.min(preferred, Math.max(0, duration - ACCOUNT_PREVIEW_MS - 1000));
 }
 
 async function ensureWebPlayer() {
@@ -109,9 +128,24 @@ function clearAccountPreviewTimer() {
   }
 }
 
+function scheduleAccountPreviewStop(durationMs) {
+  clearAccountPreviewTimer();
+  accountPreviewStartedAt = Date.now();
+  accountStopTimer = setTimeout(async () => {
+    const onStopped = accountPreviewOnStopped;
+    await pauseAccountPlayback();
+    if (typeof onStopped === 'function') {
+      onStopped();
+    }
+  }, durationMs);
+}
+
 async function pauseAccountPlayback() {
   clearAccountPreviewTimer();
   accountPlayingTrackId = null;
+  accountPreviewStartPositionMs = 0;
+  accountPreviewStartedAt = 0;
+  accountPreviewOnStopped = null;
 
   if (webPlayer) {
     try {
@@ -123,15 +157,17 @@ async function pauseAccountPlayback() {
 }
 
 async function playAccountTrackPreview(trackId, options = {}) {
-  const { durationMs = ACCOUNT_PREVIEW_MS, onStopped } = options;
+  const {
+    durationMs = ACCOUNT_PREVIEW_MS,
+    positionMs = 0,
+    onStopped,
+  } = options;
   const { deviceId } = await ensureWebPlayer();
   const token = await getValidAccessToken();
 
   if (!token) {
     throw new Error('Not authorized');
   }
-
-  clearAccountPreviewTimer();
 
   const response = await fetch(`https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(deviceId)}`, {
     method: 'PUT',
@@ -141,7 +177,7 @@ async function playAccountTrackPreview(trackId, options = {}) {
     },
     body: JSON.stringify({
       uris: [`spotify:track:${trackId}`],
-      position_ms: 0,
+      position_ms: Math.max(0, Math.floor(positionMs)),
     }),
   });
 
@@ -151,12 +187,40 @@ async function playAccountTrackPreview(trackId, options = {}) {
   }
 
   accountPlayingTrackId = trackId;
-  accountStopTimer = setTimeout(async () => {
-    await pauseAccountPlayback();
-    if (typeof onStopped === 'function') {
-      onStopped();
-    }
-  }, durationMs);
+  accountPreviewStartPositionMs = Math.max(0, Math.floor(positionMs));
+  accountPreviewOnStopped = typeof onStopped === 'function' ? onStopped : null;
+  scheduleAccountPreviewStop(durationMs);
+  return true;
+}
+
+async function skipAccountPlayback(seconds = 5) {
+  if (!webPlayer || !accountPlayingTrackId) {
+    return false;
+  }
+
+  const state = await webPlayer.getCurrentState();
+  let nextPosition = null;
+
+  if (state && typeof state.position === 'number') {
+    nextPosition = state.position + (seconds * 1000);
+  } else if (accountPreviewStartedAt) {
+    const elapsed = Date.now() - accountPreviewStartedAt;
+    nextPosition = accountPreviewStartPositionMs + elapsed + (seconds * 1000);
+  }
+
+  if (nextPosition === null) {
+    return false;
+  }
+
+  await webPlayer.seek(Math.max(0, Math.floor(nextPosition)));
+
+  // Keep roughly the same remaining preview window after a skip.
+  if (accountPreviewStartedAt) {
+    const elapsed = Date.now() - accountPreviewStartedAt;
+    const remaining = Math.max(5000, ACCOUNT_PREVIEW_MS - elapsed);
+    accountPreviewStartPositionMs = Math.max(0, Math.floor(nextPosition));
+    scheduleAccountPreviewStop(remaining);
+  }
 
   return true;
 }
