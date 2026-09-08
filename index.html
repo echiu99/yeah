@@ -4,29 +4,124 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Spotify Playlist Selector</title>
+  <style>
+    body {
+      font-family: "Times New Roman", Times, serif;
+      max-width: 500px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+
+    .button {
+      display: inline-block;
+      padding: 10px 16px;
+      margin: 0 8px 8px 0;
+      background-color: #4CAF50;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .button:hover {
+      background-color: #45a049;
+    }
+
+    .button-secondary {
+      background: #fff;
+      color: #333;
+      border: 1px solid #bbb;
+    }
+
+    .button-secondary:hover {
+      background: #f0f0f0;
+    }
+
+    .error {
+      color: #c62828;
+      margin-top: 16px;
+    }
+
+    .session-note {
+      margin-top: 20px;
+      padding: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #fafafa;
+    }
+  </style>
 </head>
 <body>
   <h1>Spotify Playlist Selector</h1>
-  <button id="authorize-button">Authorize Spotify</button>
+  <p>Log in with Spotify to rank songs from one of your playlists.</p>
+  <button id="authorize-button" class="button">Authorize Spotify</button>
+  <button id="switch-account-button" class="button button-secondary" type="button">Switch Spotify account</button>
+  <p id="status" class="error" hidden></p>
+  <div id="session-note" class="session-note" hidden></div>
 
+  <script src="spotify-auth.js"></script>
   <script>
-    const clientId = '9817b40c3aff418c9d0995bfe77885a1';
-    const redirectUri = 'https://echiu99.github.io/yeah/redirect.html';
+    const authorizeButton = document.getElementById('authorize-button');
+    const switchAccountButton = document.getElementById('switch-account-button');
+    const status = document.getElementById('status');
+    const sessionNote = document.getElementById('session-note');
 
-    // Function to handle Spotify authorization
-    function authorizeSpotify() {
-      const scopes = 'playlist-read-private';
+    async function startAuth(forceDialog = false) {
+      authorizeButton.disabled = true;
+      switchAccountButton.disabled = true;
+      status.hidden = true;
 
-      // Construct the authorization URL
-      const authUrl = `https://accounts.spotify.com/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${encodeURIComponent(scopes)}`;
-
-      // Redirect the user to the Spotify authorization URL
-      window.location.href = authUrl;
+      try {
+        await redirectToSpotifyAuth({ forceDialog });
+      } catch (error) {
+        console.error(error);
+        status.hidden = false;
+        status.textContent = 'Could not start Spotify authorization. Please try again.';
+        authorizeButton.disabled = false;
+        switchAccountButton.disabled = false;
+      }
     }
 
-    // Handle the authorization button click event
-    const authorizeButton = document.getElementById('authorize-button');
-    authorizeButton.addEventListener('click', authorizeSpotify);
+    authorizeButton.addEventListener('click', () => startAuth(false));
+    switchAccountButton.addEventListener('click', () => {
+      clearAuth();
+      startAuth(true);
+    });
+
+    (async () => {
+      const token = await getValidAccessToken();
+      if (!token) {
+        return;
+      }
+
+      try {
+        const profile = await fetchCurrentUser();
+        const name = profile.display_name || profile.id;
+        sessionNote.hidden = false;
+        sessionNote.innerHTML = `
+          Signed in as <strong>${escapeHtml(name)}</strong> (@${escapeHtml(profile.id)}).
+          <div style="margin-top: 10px;">
+            <a href="choose-playlist.html">Continue to playlists</a>
+            ·
+            <button type="button" class="button button-secondary" id="logout-home-button">Log out</button>
+          </div>
+        `;
+        document.getElementById('logout-home-button')?.addEventListener('click', () => logout());
+      } catch (error) {
+        sessionNote.hidden = false;
+        sessionNote.innerHTML = `
+          A saved Spotify session looks invalid (${escapeHtml(error.message || 'unknown error')}).
+          <div style="margin-top: 10px;">
+            <button type="button" class="button button-secondary" id="clear-session-button">Clear session &amp; log in again</button>
+          </div>
+        `;
+        document.getElementById('clear-session-button')?.addEventListener('click', () => {
+          clearAuth();
+          startAuth(true);
+        });
+      }
+    })();
   </script>
 </body>
 </html>

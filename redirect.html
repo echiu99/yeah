@@ -4,19 +4,56 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Spotify Authorization Redirect</title>
+  <style>
+    body {
+      font-family: "Times New Roman", Times, serif;
+      max-width: 500px;
+      margin: 40px auto;
+      padding: 0 20px;
+    }
+
+    .error {
+      color: #c62828;
+    }
+
+    a {
+      color: #2e7d32;
+    }
+  </style>
 </head>
 <body>
-  <h1>Spotify Authorization Redirect</h1>
+  <h1>Spotify Authorization</h1>
+  <p id="message">Finishing login…</p>
 
+  <script src="spotify-auth.js"></script>
   <script>
-    // Get the access token from the URL hash
-    const accessToken = window.location.hash.substr(1).split('&')[0].split('=')[1];
+    (async () => {
+      const message = document.getElementById('message');
+      const params = new URLSearchParams(window.location.search);
+      const error = params.get('error');
+      const code = params.get('code');
 
-    // Store the access token in local storage
-    localStorage.setItem('spotifyAccessToken', accessToken);
+      if (error) {
+        message.className = 'error';
+        message.innerHTML = `Authorization failed (${error}). <a href="index.html">Try again</a>.`;
+        return;
+      }
 
-    // Redirect the user back to the main page
-    window.location.href = 'https://echiu99.github.io/yeah/choose-playlist.html';
+      if (!code) {
+        message.className = 'error';
+        message.innerHTML = `Missing authorization code. <a href="index.html">Start over</a>.`;
+        return;
+      }
+
+      try {
+        await exchangeCodeForToken(code);
+        window.location.replace('choose-playlist.html');
+      } catch (err) {
+        console.error(err);
+        message.className = 'error';
+        message.innerHTML = `${err.message || 'Could not complete login.'} <a href="index.html">Try again</a>.`;
+      }
+    })();
   </script>
 </body>
 </html>

@@ -36,10 +36,17 @@
       border: none;
       border-radius: 4px;
       cursor: pointer;
+      font: inherit;
+      box-sizing: border-box;
     }
 
-    .button:hover {
+    .button:hover:not(:disabled) {
       background-color: #45a049;
+    }
+
+    .button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
 
     .back-button {
@@ -54,6 +61,7 @@
       border-radius: 4px;
       cursor: pointer;
       width: auto;
+      font: inherit;
     }
 
     .back-button:hover {
@@ -64,170 +72,263 @@
       background-color: #f0ad4e;
     }
 
-    .undo-button:hover {
+    .undo-button:hover:not(:disabled) {
       background-color: #ec971f;
+    }
+
+    .status {
+      text-align: center;
+    }
+
+    .error {
+      color: #c62828;
+    }
+
+    .round-label {
+      text-align: center;
+      margin-bottom: 16px;
+      color: #555;
     }
   </style>
 </head>
 <body>
-  <button class="back-button" onclick="goBack()">Back</button>
+  <button class="back-button" type="button" onclick="goBack()">Back</button>
   <div class="container">
+    <div id="user-bar"></div>
     <h1>Tournament Rating</h1>
-    <div id="song-container"></div>
-    <button class="button next-button" id="next-button" disabled>Next</button>
-    <button class="button undo-button" onclick="undoSelection()" disabled>Undo</button>
+    <div id="round-label" class="round-label"></div>
+    <div id="song-container" class="status">Loading songs…</div>
+    <button class="button undo-button" type="button" id="undo-button" onclick="undoSelection()" disabled>Undo</button>
   </div>
 
+  <script src="spotify-auth.js"></script>
   <script>
-    let allSongs = [];
+    let originalSongs = [];
+    let remaining = [];
+    let advancing = [];
     let currentPair = [];
-    let winners = [];
-    let lastPair = [];
+    let history = [];
+    let eliminated = [];
+    let roundNumber = 1;
 
-    window.onload = async function () {
-      const accessToken = localStorage.getItem('spotifyAccessToken');
-      const selectedPlaylistId = localStorage.getItem('selectedPlaylistId');
+    const songContainer = document.getElementById('song-container');
+    const undoButton = document.getElementById('undo-button');
+    const roundLabel = document.getElementById('round-label');
+    const userBar = document.getElementById('user-bar');
 
-      if (accessToken && selectedPlaylistId) {
-        try {
-          const response = await fetch(`https://api.spotify.com/v1/playlists/${selectedPlaylistId}/tracks`, {
-            headers: {
-              'Authorization': 'Bearer ' + accessToken
-            }
-          });
-          const data = await response.json();
+    ensureUserBarStyles();
 
-          if (data.items.length === 0) {
-            alert('This playlist is empty. Please select a different playlist.');
-            goBack();
+    function shuffle(songs) {
+      const copy = [...songs];
+      for (let i = copy.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+      }
+      return copy;
+    }
+
+    function cloneSongs(songs) {
+      return songs.map((song) => ({ ...song }));
+    }
+
+    function updateRoundLabel() {
+      const stillIn = remaining.length + advancing.length + currentPair.length;
+      roundLabel.textContent = stillIn > 0
+        ? `Round ${roundNumber} · ${stillIn} song${stillIn === 1 ? '' : 's'} left`
+        : '';
+    }
+
+    function renderMatchup() {
+      updateRoundLabel();
+      songContainer.innerHTML = `
+        <div class="song-item">
+          <h3>${escapeHtml(currentPair[0].name)}</h3>
+          <p>${escapeHtml(currentPair[0].artist)}</p>
+          <button class="button" type="button" onclick="selectWinner(0)">Select</button>
+        </div>
+        <div class="song-item">
+          <h3>${escapeHtml(currentPair[1].name)}</h3>
+          <p>${escapeHtml(currentPair[1].artist)}</p>
+          <button class="button" type="button" onclick="selectWinner(1)">Select</button>
+        </div>
+      `;
+      undoButton.disabled = history.length === 0;
+    }
+
+    function nextMatch() {
+      while (remaining.length < 2) {
+        if (remaining.length === 1) {
+          advancing.push(remaining.shift());
+        }
+
+        if (remaining.length === 0) {
+          if (advancing.length === 1) {
+            displayWinner(advancing[0]);
             return;
           }
 
-          // Extract relevant song data
-          allSongs = data.items.map(item => ({
-            name: item.track.name,
-            artist: item.track.artists.map(artist => artist.name).join(', '),
-            id: item.track.id,
-            votes: 0, // Initialize votes for each song
-          }));
+          if (advancing.length === 0) {
+            songContainer.innerHTML = '<p class="error">No songs available for this tournament.</p>';
+            undoButton.disabled = true;
+            return;
+          }
 
-          // Start the tournament
-          nextRound();
-        } catch (error) {
-          console.error('Error fetching songs:', error);
-          const songContainer = document.getElementById('song-container');
-          songContainer.innerHTML = `
-            <p>Error fetching songs. Please check your connection or reauthorize the app.</p>
-            <button class="button" onclick="window.location.reload()">Retry</button>
-          `;
+          remaining = advancing;
+          advancing = [];
+          roundNumber += 1;
         }
-      } else {
-        console.log('User not authorized or playlist not selected.');
       }
-    };
 
-    function nextRound() {
-      if (allSongs.length > 1) {
-        // Store the current pair as the last pair for undo
-        lastPair = [...currentPair];
-
-        // Select two songs for the next matchup
-        currentPair = allSongs.splice(0, 2);
-
-        // Display the pair
-        const songContainer = document.getElementById('song-container');
-        songContainer.innerHTML = `
-          <div class="song-item">
-            <h3>${currentPair[0].name}</h3>
-            <p>${currentPair[0].artist}</p>
-            <button class="button" onclick="selectWinner(0)">Select</button>
-          </div>
-          <div class="song-item">
-            <h3>${currentPair[1].name}</h3>
-            <p>${currentPair[1].artist}</p>
-            <button class="button" onclick="selectWinner(1)">Select</button>
-          </div>
-        `;
-
-        // Enable the Undo button
-        document.querySelector('.undo-button').disabled = false;
-      } else if (allSongs.length === 1) {
-        // Add the last song to winners
-        winners.push(allSongs[0]);
-
-        // Display the final winner
-        displayWinner();
-      } else {
-        // Tournament complete
-        allSongs = winners;
-        winners = [];
-        nextRound();
-      }
+      currentPair = [remaining.shift(), remaining.shift()];
+      renderMatchup();
     }
 
     function selectWinner(index) {
-      currentPair[index].votes++; // Increment the vote count for the selected song
-      winners.push(currentPair[index]); // Add the winner to the winners array
-      nextRound(); // Move to the next round
+      const winner = currentPair[index];
+      const loser = currentPair[1 - index];
+
+      history.push({
+        pair: [...currentPair],
+        winnerIndex: index,
+        remaining: [...remaining],
+        advancing: [...advancing],
+        eliminated: [...eliminated],
+        roundNumber,
+      });
+
+      winner.wins += 1;
+      eliminated.push(loser);
+      advancing.push(winner);
+      currentPair = [];
+      nextMatch();
     }
 
     function undoSelection() {
-      if (lastPair.length > 0) {
-        // Restore the last pair to the front of the song list
-        allSongs.unshift(...lastPair);
-
-        // Remove the last winner from the history
-        winners.pop();
-
-        // Clear the last pair
-        lastPair = [];
-
-        // Re-run the current round
-        nextRound();
-
-        // Disable the Undo button
-        document.querySelector('.undo-button').disabled = true;
+      const previous = history.pop();
+      if (!previous) {
+        return;
       }
+
+      remaining = previous.remaining;
+      advancing = previous.advancing;
+      eliminated = previous.eliminated;
+      roundNumber = previous.roundNumber;
+      currentPair = previous.pair;
+      renderMatchup();
     }
 
-    function displayWinner() {
-      const songContainer = document.getElementById('song-container');
+    function displayWinner(champion) {
+      roundLabel.textContent = '';
+      undoButton.disabled = history.length === 0;
 
-      // Merge winners and all remaining songs, avoiding duplicates
-      const allRankedSongs = Array.from(new Map([...winners, ...allSongs].map(song => [song.id, song])).values());
+      const rankings = [champion, ...eliminated.slice().reverse()];
+      const seen = new Set();
+      const uniqueRankings = rankings.filter((song) => {
+        if (seen.has(song.id)) {
+          return false;
+        }
+        seen.add(song.id);
+        return true;
+      });
 
-      // Sort songs by votes (descending) and then by name (alphabetically as a tiebreaker)
-      allRankedSongs.sort((a, b) => b.votes - a.votes || a.name.localeCompare(b.name));
-
-      // Display the rankings
-      songContainer.innerHTML = `<h2>Final Rankings</h2>`;
-      allRankedSongs.forEach((song, index) => {
+      songContainer.innerHTML = '<h2>Final Rankings</h2>';
+      uniqueRankings.forEach((song, index) => {
         songContainer.innerHTML += `
-          <p>${index + 1}. ${song.name} by ${song.artist} (Votes: ${song.votes})</p>
+          <p>${index + 1}. ${escapeHtml(song.name)} by ${escapeHtml(song.artist)} (Wins: ${song.wins})</p>
         `;
       });
 
-      // Add a restart button
       songContainer.innerHTML += `
-        <button class="button" onclick="restartTournament()">Restart Tournament</button>
+        <button class="button" type="button" onclick="restartTournament()">Restart Tournament</button>
       `;
     }
 
     function restartTournament() {
-      // Combine winners and all songs, remove duplicates, and reset votes
-      allSongs = Array.from(new Map([...winners, ...allSongs].map(song => [song.id, { ...song, votes: 0 }])).values());
-      winners = [];
+      remaining = shuffle(cloneSongs(originalSongs));
+      advancing = [];
       currentPair = [];
-      lastPair = [];
-      allSongs.sort(() => Math.random() - 0.5); // Shuffle
-      nextRound();
+      history = [];
+      eliminated = [];
+      roundNumber = 1;
+      nextMatch();
     }
 
     function goBack() {
-      // Optionally, clear the selected playlist ID
-      localStorage.removeItem('selectedPlaylistId');
+      localStorage.removeItem(STORAGE_KEYS.selectedPlaylistId);
       window.location.href = 'choose-playlist.html';
     }
+
+    window.onload = async function () {
+      const accessToken = await getValidAccessToken();
+      const selectedPlaylistId = localStorage.getItem(STORAGE_KEYS.selectedPlaylistId);
+
+      if (!accessToken) {
+        songContainer.innerHTML = '<p class="error">You are not authorized. <a href="index.html">Log in with Spotify</a>.</p>';
+        return;
+      }
+
+      try {
+        await renderUserBar(userBar);
+      } catch (error) {
+        songContainer.innerHTML = `
+          <p class="error">${escapeHtml(error.message || 'Could not verify your Spotify profile.')}</p>
+          <p class="error">Use Log out or Switch account above, then try again.</p>
+        `;
+        return;
+      }
+
+      if (!selectedPlaylistId) {
+        songContainer.innerHTML = '<p class="error">No playlist selected. <a href="choose-playlist.html">Choose a playlist</a>.</p>';
+        return;
+      }
+
+      try {
+        const items = await fetchAllPages(
+          `https://api.spotify.com/v1/playlists/${selectedPlaylistId}/tracks?limit=100`
+        );
+
+        const songs = items
+          .filter((item) => item.track && item.track.id)
+          .map((item) => ({
+            name: item.track.name,
+            artist: item.track.artists.map((artist) => artist.name).join(', '),
+            id: item.track.id,
+            wins: 0,
+          }));
+
+        const uniqueSongs = Array.from(new Map(songs.map((song) => [song.id, song])).values());
+
+        if (uniqueSongs.length === 0) {
+          alert('This playlist is empty. Please select a different playlist.');
+          goBack();
+          return;
+        }
+
+        if (uniqueSongs.length === 1) {
+          originalSongs = cloneSongs(uniqueSongs);
+          displayWinner(uniqueSongs[0]);
+          return;
+        }
+
+        originalSongs = cloneSongs(uniqueSongs);
+        remaining = shuffle(cloneSongs(uniqueSongs));
+        nextMatch();
+      } catch (error) {
+        console.error('Error fetching songs:', error);
+        if (error.message === 'Not authorized') {
+          clearAuth();
+          songContainer.innerHTML = `
+            <p class="error">Your Spotify session expired. <a href="index.html">Log in again</a>.</p>
+          `;
+          return;
+        }
+
+        songContainer.innerHTML = `
+          <p class="error">Error fetching songs. Please check your connection or reauthorize the app.</p>
+          <button class="button" type="button" onclick="window.location.reload()">Retry</button>
+        `;
+      }
+    };
   </script>
 </body>
 </html>

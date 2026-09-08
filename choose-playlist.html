@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Choose Playlist</title>
   <style>
-    /* Add your CSS styles here */
     body {
       font-family: "Times New Roman", Times, serif;
     }
@@ -36,77 +35,125 @@
       border: none;
       border-radius: 4px;
       cursor: pointer;
+      font: inherit;
+      box-sizing: border-box;
     }
 
-    .button:hover {
+    .button:hover:not(:disabled) {
       background-color: #45a049;
+    }
+
+    .button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .status {
+      text-align: center;
+      margin-top: 12px;
+    }
+
+    .error {
+      color: #c62828;
     }
   </style>
 </head>
 <body>
   <div class="container">
+    <div id="user-bar"></div>
     <h1>Choose a Playlist</h1>
-    <div id="playlist-container"></div>
-    <a href="https://echiu99.github.io/yeah/rate-songs.html" class="button" id="select-button" disabled>Select Playlist</a>
+    <div id="playlist-container" class="status">Loading playlists…</div>
+    <button type="button" class="button" id="select-button" disabled>Select Playlist</button>
+    <p id="error" class="status error" hidden></p>
   </div>
 
+  <script src="spotify-auth.js"></script>
   <script>
-    function fetchPlaylists() {
-      // Check if the access token and selected playlist ID are stored
-      if (localStorage.getItem('spotifyAccessToken') && localStorage.getItem('selectedPlaylistId')) {
-        localStorage.removeItem('spotifyAccessToken');
-        localStorage.removeItem('selectedPlaylistId');
+    const playlistContainer = document.getElementById('playlist-container');
+    const selectButton = document.getElementById('select-button');
+    const errorEl = document.getElementById('error');
+    const userBar = document.getElementById('user-bar');
+
+    ensureUserBarStyles();
+
+    function showError(message) {
+      errorEl.hidden = false;
+      errorEl.innerHTML = message;
+    }
+
+    async function fetchPlaylists() {
+      localStorage.removeItem(STORAGE_KEYS.selectedPlaylistId);
+
+      const accessToken = await getValidAccessToken();
+      if (!accessToken) {
+        playlistContainer.textContent = '';
+        userBar.innerHTML = '';
+        showError('You are not authorized. <a href="index.html">Log in with Spotify</a>.');
+        return;
       }
 
-      // Fetch and display the user's Spotify playlists
-      const accessToken = localStorage.getItem('spotifyAccessToken');
+      try {
+        await renderUserBar(userBar);
+      } catch (error) {
+        playlistContainer.textContent = '';
+        showError(
+          `${escapeHtml(error.message || 'Could not verify your Spotify profile.')} ` +
+          'Use <strong>Log out</strong> or <strong>Switch account</strong> above, then try again.'
+        );
+        return;
+      }
 
-      if (accessToken) {
-        fetch('https://api.spotify.com/v1/me/playlists', {
-          headers: {
-            'Authorization': 'Bearer ' + accessToken
-          }
-        })
-        .then(response => response.json())
-        .then(data => {
-          const playlistContainer = document.getElementById('playlist-container');
+      try {
+        const playlists = await fetchAllPages('https://api.spotify.com/v1/me/playlists?limit=50');
+        playlistContainer.innerHTML = '';
+        errorEl.hidden = true;
 
-          if (data.items.length > 0) {
-            data.items.forEach(playlist => {
-              const playlistItem = document.createElement('div');
-              playlistItem.classList.add('playlist-item');
-              playlistItem.innerHTML = `
-                <input type="radio" name="playlist" value="${playlist.id}" id="${playlist.id}">
-                <label for="${playlist.id}">${playlist.name}</label>
-              `;
-              playlistContainer.appendChild(playlistItem);
-            });
+        if (playlists.length === 0) {
+          playlistContainer.textContent = 'No playlists found on this account.';
+          return;
+        }
 
-            const selectButton = document.getElementById('select-button');
-            const playlistRadios = document.querySelectorAll('input[name="playlist"]');
-            playlistRadios.forEach(radio => {
-              radio.addEventListener('change', () => {
-                selectButton.removeAttribute('disabled');
-              });
-            });
-
-            selectButton.addEventListener('click', () => {
-              const selectedPlaylistId = document.querySelector('input[name="playlist"]:checked').value;
-              localStorage.setItem('selectedPlaylistId', selectedPlaylistId);
-            });
-          } else {
-            playlistContainer.innerHTML = 'No playlists found.';
-          }
-        })
-        .catch(error => {
-          console.log('Error fetching playlists:', error);
-          const playlistContainer = document.getElementById('playlist-container');
-          playlistContainer.innerHTML = 'Error fetching playlists. Please try again later.';
+        playlists.forEach((playlist) => {
+          const playlistItem = document.createElement('div');
+          const safeId = escapeHtml(playlist.id);
+          const safeName = escapeHtml(playlist.name);
+          playlistItem.classList.add('playlist-item');
+          playlistItem.innerHTML = `
+            <input type="radio" name="playlist" value="${safeId}" id="${safeId}">
+            <label for="${safeId}">${safeName}</label>
+          `;
+          playlistContainer.appendChild(playlistItem);
         });
-      } else {
-        console.log('User not authorized.');
+
+        document.querySelectorAll('input[name="playlist"]').forEach((radio) => {
+          radio.addEventListener('change', () => {
+            selectButton.disabled = false;
+          });
+        });
+      } catch (error) {
+        console.error('Error fetching playlists:', error);
+        playlistContainer.textContent = '';
+        if (error.message === 'Not authorized') {
+          clearAuth();
+          showError('Your Spotify session expired. <a href="index.html">Log in again</a>.');
+        } else {
+          showError(
+            `Error fetching playlists: ${escapeHtml(error.message)}. ` +
+            'Try <strong>Log out</strong> / <strong>Switch account</strong>, then authorize again.'
+          );
+        }
       }
     }
+
+    selectButton.addEventListener('click', () => {
+      const selected = document.querySelector('input[name="playlist"]:checked');
+      if (!selected) {
+        return;
+      }
+
+      localStorage.setItem(STORAGE_KEYS.selectedPlaylistId, selected.value);
+      window.location.href = 'rate-songs.html';
+    });
 
     fetchPlaylists();
   </script>
