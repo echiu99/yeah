@@ -15,7 +15,7 @@
       padding: 20px;
     }
 
-    h1 {
+    h1, h2 {
       text-align: center;
     }
 
@@ -56,6 +56,29 @@
     .error {
       color: #c62828;
     }
+
+    .options-panel {
+      margin-top: 24px;
+      padding: 14px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #fafafa;
+    }
+
+    .options-panel label {
+      display: block;
+      margin: 8px 0;
+    }
+
+    .hint {
+      color: #555;
+      font-size: 0.95em;
+      margin: 10px 0 0;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
   </style>
 </head>
 <body>
@@ -63,7 +86,24 @@
     <div id="user-bar"></div>
     <h1>Choose a Playlist</h1>
     <div id="playlist-container" class="status">Loading playlists…</div>
-    <button type="button" class="button" id="select-button" disabled>Select Playlist</button>
+
+    <div id="tournament-options" class="options-panel" hidden>
+      <h2>Tournament size</h2>
+      <label><input type="radio" name="sample-size" value="all" checked> All songs</label>
+      <label><input type="radio" name="sample-size" value="16"> Random 16</label>
+      <label><input type="radio" name="sample-size" value="32"> Random 32</label>
+      <label><input type="radio" name="sample-size" value="64"> Random 64</label>
+
+      <label id="dual-heat-wrap">
+        <input type="checkbox" id="dual-heat" checked>
+        Two heats + final
+      </label>
+      <p class="hint" id="options-hint">
+        With two heats, a second non-overlapping sample runs after the first, then the two heat winners play each other.
+      </p>
+    </div>
+
+    <button type="button" class="button" id="select-button" disabled>Start Tournament</button>
     <p id="error" class="status error" hidden></p>
   </div>
 
@@ -73,12 +113,31 @@
     const selectButton = document.getElementById('select-button');
     const errorEl = document.getElementById('error');
     const userBar = document.getElementById('user-bar');
+    const tournamentOptions = document.getElementById('tournament-options');
+    const dualHeat = document.getElementById('dual-heat');
+    const dualHeatWrap = document.getElementById('dual-heat-wrap');
+    const optionsHint = document.getElementById('options-hint');
 
     ensureUserBarStyles();
 
     function showError(message) {
       errorEl.hidden = false;
       errorEl.innerHTML = message;
+    }
+
+    function syncOptionsUi() {
+      const sample = document.querySelector('input[name="sample-size"]:checked')?.value || 'all';
+      const sampling = sample !== 'all';
+      dualHeat.disabled = !sampling;
+      if (!sampling) {
+        dualHeat.checked = false;
+      } else if (!dualHeat.dataset.touched) {
+        dualHeat.checked = true;
+      }
+      dualHeatWrap.style.opacity = sampling ? '1' : '0.55';
+      optionsHint.textContent = sampling
+        ? 'With two heats, a second non-overlapping sample runs after the first, then the two heat winners play each other.'
+        : 'Using the full playlist as one bracket.';
     }
 
     async function fetchPlaylists() {
@@ -128,8 +187,18 @@
         document.querySelectorAll('input[name="playlist"]').forEach((radio) => {
           radio.addEventListener('change', () => {
             selectButton.disabled = false;
+            tournamentOptions.hidden = false;
+            syncOptionsUi();
           });
         });
+
+        document.querySelectorAll('input[name="sample-size"]').forEach((radio) => {
+          radio.addEventListener('change', syncOptionsUi);
+        });
+        dualHeat.addEventListener('change', () => {
+          dualHeat.dataset.touched = '1';
+        });
+        syncOptionsUi();
       } catch (error) {
         console.error('Error fetching playlists:', error);
         playlistContainer.textContent = '';
@@ -151,7 +220,13 @@
         return;
       }
 
+      const sampleSize = document.querySelector('input[name="sample-size"]:checked')?.value || 'all';
       localStorage.setItem(STORAGE_KEYS.selectedPlaylistId, selected.value);
+      localStorage.setItem(STORAGE_KEYS.sampleSize, sampleSize);
+      localStorage.setItem(
+        STORAGE_KEYS.dualHeat,
+        sampleSize !== 'all' && dualHeat.checked ? 'true' : 'false'
+      );
       window.location.href = 'rate-songs.html';
     });
 

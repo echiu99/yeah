@@ -257,9 +257,6 @@
     <div id="song-container" class="status">Loading songs…</div>
 
     <div id="matchup-panel" hidden>
-      <p class="hint" id="preview-hint">
-        Play a short preview for each song. Only one side plays at a time.
-      </p>
       <div class="matchup-grid">
         <div class="song-item" id="song-slot-0">
           <h3 id="song-name-0"></h3>
@@ -308,6 +305,12 @@
     let finished = false;
     let spotifyProfile = null;
     let previewMode = 'embed'; // 'account' | 'embed'
+    let heats = [];
+    let currentHeatIndex = 0;
+    let heatChampions = [];
+    let phase = 'heat'; // 'heat' | 'final'
+    let dualHeatEnabled = false;
+    let sampleSizeSetting = 'all';
 
     let spotifyIframeApi = null;
     let embedControllers = [null, null];
@@ -323,7 +326,6 @@
     const userBar = document.getElementById('user-bar');
     const sidePanels = document.getElementById('side-panels');
     const previewModeNote = document.getElementById('preview-mode-note');
-    const previewHint = document.getElementById('preview-hint');
 
     ensureUserBarStyles();
 
@@ -406,9 +408,22 @@
 
     function updateRoundLabel() {
       const stillIn = remaining.length + advancing.length + currentPair.length;
-      roundLabel.textContent = stillIn > 0
-        ? `Round ${roundNumber} · ${stillIn} song${stillIn === 1 ? '' : 's'} left · ${matchLog.length} match${matchLog.length === 1 ? '' : 'es'} played`
-        : '';
+      if (stillIn <= 0) {
+        roundLabel.textContent = '';
+        return;
+      }
+
+      let stage = 'Bracket';
+      if (phase === 'final') {
+        stage = 'Final';
+      } else if (heats.length > 1) {
+        stage = `Heat ${currentHeatIndex + 1} of ${heats.length}`;
+      } else if (sampleSizeSetting !== 'all') {
+        stage = `Sample of ${heats[0]?.length || stillIn}`;
+      }
+
+      roundLabel.textContent =
+        `${stage} · Round ${roundNumber} · ${stillIn} song${stillIn === 1 ? '' : 's'} left · ${matchLog.length} match${matchLog.length === 1 ? '' : 'es'} played`;
     }
 
     function ensureHtmlAudio() {
@@ -597,44 +612,28 @@
         host.hidden = usingAccount;
       });
 
-      if (usingAccount) {
-        previewHint.textContent =
-          'Premium playback: starts past the intro (~15s / 20% in) for ~30 seconds. Use +5s while playing if needed.';
-        previewModeNote.hidden = false;
-        previewModeNote.classList.remove('warning');
-        previewModeNote.textContent =
-          'Using Spotify Premium account playback (no signup prompt after the clip).';
-      } else if (spotifyProfile && isPremiumProfile(spotifyProfile) && !hasAccountPlaybackScopes()) {
-        previewHint.textContent =
-          'Play a ~30s Spotify embed preview for each song. Only one side plays at a time.';
+      // Only show a note when the user needs to take action.
+      if (spotifyProfile && isPremiumProfile(spotifyProfile) && !hasAccountPlaybackScopes()) {
         previewModeNote.hidden = false;
         previewModeNote.classList.add('warning');
         previewModeNote.innerHTML =
-          'Your account is Premium, but this login is missing playback permission. ' +
-          '<button type="button" class="button button-secondary" id="reauth-playback-button" style="width:auto;display:inline-block;margin:8px 0 0;">Re-authorize for account playback</button>';
+          'Premium account playback needs a fresh login. ' +
+          '<button type="button" class="button button-secondary" id="reauth-playback-button" style="width:auto;display:inline-block;margin:8px 0 0;">Re-authorize</button>';
         document.getElementById('reauth-playback-button')?.addEventListener('click', () => {
           logout({ switchAccount: true });
         });
-      } else {
-        previewHint.textContent =
-          'Free plan: play Spotify’s ~30s embed preview. Only one side plays at a time. A signup link after the clip is normal for embeds.';
-        previewModeNote.hidden = false;
-        previewModeNote.classList.remove('warning');
-        previewModeNote.textContent =
-          'Using embed previews (works on Free). If you have Premium, re-authorize once to unlock account playback without the signup prompt.';
+        return;
       }
+
+      previewModeNote.hidden = true;
+      previewModeNote.textContent = '';
     }
 
     async function configurePreviewMode(profile) {
       spotifyProfile = profile;
       previewMode = 'embed';
 
-      if (!isPremiumProfile(profile)) {
-        applyPreviewModeUi();
-        return;
-      }
-
-      if (!hasAccountPlaybackScopes()) {
+      if (!isPremiumProfile(profile) || !hasAccountPlaybackScopes()) {
         applyPreviewModeUi();
         return;
       }
@@ -645,13 +644,134 @@
       } catch (error) {
         console.warn('Falling back to embed previews:', error);
         previewMode = 'embed';
-        previewModeNote.hidden = false;
-        previewModeNote.classList.add('warning');
-        previewModeNote.textContent =
-          `Could not start account playback (${error.message}). Using embed previews instead.`;
       }
 
       applyPreviewModeUi();
+    }
+
+    function buildHeats(allSongs, sampleSize, wantDual) {
+      const pool = shuffle([...allSongs]);
+      if (sampleSize === 'all') {
+        return { heats: [pool], dual: false };
+      }
+
+      const size = Number(sampleSize);
+      if (!size || size >= pool.length) {
+        return { heats: [pool], dual: false };
+      }
+
+      const heat1 = pool.slice(0, size);
+      if (!wantDual) {
+        return { heats: [heat1], dual: false };
+      }
+
+      const rest = pool.slice(size);
+      if (rest.length < 2) {
+        return { heats: [heat1], dual: false };
+      }
+
+      return { heats: [heat1, rest.slice(0, size)], dual: true };
+    }
+
+    function startHeat(index) {
+      phase = 'heat';
+      currentHeatIndex = index;
+      remaining = [...heats[index]];
+      advancing = [];
+      currentPair = [];
+      history = [];
+      roundNumber = 1;
+      finished = false;
+      undoButton.hidden = false;
+      nextMatch();
+    }
+
+    function beginFinal() {
+      phase = 'final';
+      remaining = [...heatChampions];
+      advancing = [];
+      currentPair = [];
+      history = [];
+      roundNumber = 1;
+      finished = false;
+      undoButton.hidden = false;
+      nextMatch();
+    }
+
+    function showHeatTransition(champion, nextIndex) {
+      stopAllPreviews();
+      matchupPanel.hidden = true;
+      songContainer.hidden = false;
+      undoButton.hidden = true;
+      roundLabel.textContent = `Heat ${currentHeatIndex + 1} complete`;
+      songContainer.innerHTML = `
+        <div class="champion">
+          <strong>Heat ${currentHeatIndex + 1} champion:</strong> ${escapeHtml(champion.name)}
+          <div class="meta">${escapeHtml(champion.artist)} · Elo ${champion.elo}</div>
+        </div>
+        <p class="hint">Next up: Heat ${nextIndex + 1} with ${heats[nextIndex].length} different songs.</p>
+        <button class="button" type="button" id="continue-heat-button">Start Heat ${nextIndex + 1}</button>
+      `;
+      document.getElementById('continue-heat-button').addEventListener('click', () => {
+        startHeat(nextIndex);
+      });
+      renderSidePanels({ openHistory: true, openRankings: true });
+    }
+
+    function showFinalTransition() {
+      stopAllPreviews();
+      matchupPanel.hidden = true;
+      songContainer.hidden = false;
+      undoButton.hidden = true;
+      roundLabel.textContent = 'Heats complete';
+      songContainer.innerHTML = `
+        <div class="champion">
+          <p><strong>Heat 1 champion:</strong> ${escapeHtml(heatChampions[0].name)}</p>
+          <p><strong>Heat 2 champion:</strong> ${escapeHtml(heatChampions[1].name)}</p>
+        </div>
+        <p class="hint">Pit the two heat winners against each other.</p>
+        <button class="button" type="button" id="continue-final-button">Start Final</button>
+      `;
+      document.getElementById('continue-final-button').addEventListener('click', () => {
+        beginFinal();
+      });
+      renderSidePanels({ openHistory: true, openRankings: true });
+    }
+
+    function onBracketComplete(champion) {
+      if (phase === 'final') {
+        displayWinner(champion);
+        return;
+      }
+
+      heatChampions.push(champion);
+
+      if (currentHeatIndex < heats.length - 1) {
+        showHeatTransition(champion, currentHeatIndex + 1);
+        return;
+      }
+
+      if (dualHeatEnabled && heatChampions.length >= 2) {
+        showFinalTransition();
+        return;
+      }
+
+      displayWinner(champion);
+    }
+
+    function setupTournamentFromPlaylist(allSongs) {
+      sampleSizeSetting = localStorage.getItem(STORAGE_KEYS.sampleSize) || 'all';
+      const wantDual = localStorage.getItem(STORAGE_KEYS.dualHeat) === 'true';
+      const built = buildHeats(allSongs, sampleSizeSetting, wantDual);
+      heats = built.heats;
+      dualHeatEnabled = built.dual;
+      heatChampions = [];
+      currentHeatIndex = 0;
+      phase = 'heat';
+      history = [];
+      matchLog = [];
+      eliminated = [];
+      startHeat(0);
     }
 
     async function syncEmbedsToCurrentPair() {
@@ -713,10 +833,6 @@
           console.warn('Account preview failed, falling back to embed', error);
           previewMode = 'embed';
           applyPreviewModeUi();
-          previewModeNote.hidden = false;
-          previewModeNote.classList.add('warning');
-          previewModeNote.textContent =
-            `Account playback failed (${error.message}). Switched to embed previews.`;
         }
       }
 
@@ -854,7 +970,7 @@
 
         if (remaining.length === 0) {
           if (advancing.length === 1) {
-            displayWinner(advancing[0]);
+            onBracketComplete(advancing[0]);
             return;
           }
 
@@ -991,20 +1107,20 @@
 
     function restartTournament() {
       stopAllPreviews();
-      remaining = shuffle(cloneSongs(originalSongs));
-      advancing = [];
-      currentPair = [];
-      history = [];
-      matchLog = [];
-      eliminated = [];
-      roundNumber = 1;
-      finished = false;
-      nextMatch();
+      originalSongs = cloneSongs(originalSongs).map((song) => ({
+        ...song,
+        wins: 0,
+        losses: 0,
+        elo: ELO_START,
+      }));
+      setupTournamentFromPlaylist(originalSongs);
     }
 
     function goBack() {
       stopAllPreviews();
       localStorage.removeItem(STORAGE_KEYS.selectedPlaylistId);
+      localStorage.removeItem(STORAGE_KEYS.sampleSize);
+      localStorage.removeItem(STORAGE_KEYS.dualHeat);
       window.location.href = 'choose-playlist.html';
     }
 
@@ -1060,12 +1176,13 @@
         }
 
         if (uniqueSongs.length === 1) {
+          heats = [uniqueSongs];
+          dualHeatEnabled = false;
           displayWinner(uniqueSongs[0]);
           return;
         }
 
-        remaining = shuffle(cloneSongs(uniqueSongs));
-        nextMatch();
+        setupTournamentFromPlaylist(originalSongs);
       } catch (error) {
         console.error('Error fetching songs:', error);
         if (error.message === 'Not authorized') {

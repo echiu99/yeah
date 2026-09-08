@@ -18,6 +18,8 @@ const STORAGE_KEYS = {
   selectedPlaylistId: 'selectedPlaylistId',
   userProfile: 'spotifyUserProfile',
   tokenScopes: 'spotifyTokenScopes',
+  sampleSize: 'tournamentSampleSize',
+  dualHeat: 'tournamentDualHeat',
 };
 
 function generateRandomString(length) {
@@ -75,6 +77,8 @@ function clearAuth() {
   localStorage.removeItem(STORAGE_KEYS.userProfile);
   localStorage.removeItem(STORAGE_KEYS.selectedPlaylistId);
   localStorage.removeItem(STORAGE_KEYS.tokenScopes);
+  localStorage.removeItem(STORAGE_KEYS.sampleSize);
+  localStorage.removeItem(STORAGE_KEYS.dualHeat);
 }
 
 function logout(options = {}) {
